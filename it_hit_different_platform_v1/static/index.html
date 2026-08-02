@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#08090b">
+  <title>IT HIT DIFFERENT LLC — Creator Network</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <section id="gate" class="gate-shell">
+    <div class="gate-glow"></div>
+    <div class="gate-wrap">
+      <div class="gate-brand">
+        <div class="logo-orb large">IHD</div>
+        <p class="eyebrow">PRIVATE CREATOR NETWORK</p>
+        <h1>IT HIT <span>DIFFERENT</span></h1>
+        <div class="llc">LLC</div>
+        <p class="gate-copy">Record it. Build it. Protect it. Release it. Own the business around it.</p>
+        <div class="gate-badges"><span>STUDIO</span><span>BEATS</span><span>LIVE</span><span>RIGHTS</span><span>RELEASES</span></div>
+      </div>
+      <form id="loginForm" class="gate-card">
+        <div class="lock-dot">◆</div>
+        <p class="eyebrow">AUTHORIZED ACCESS</p>
+        <h2>Enter the network.</h2>
+        <p class="muted">Accounts are created or verified by IT HIT DIFFERENT LLC administration.</p>
+        <label>Email<input id="loginEmail" type="email" autocomplete="username" required placeholder="creator@example.com"></label>
+        <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••••••"></label>
+        <button class="btn primary wide" type="submit">Unlock Private Gate</button>
+        <div id="loginError" class="form-error"></div>
+        <p class="tiny">Private system. Access attempts are recorded. Production deployment should use HTTPS and MFA/passkeys.</p>
+      </form>
+    </div>
+  </section>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div>
+        <div class="brand"><div class="logo-orb">IHD</div><div><b>IT HIT DIFFERENT</b><small>LLC CREATOR OS</small></div></div>
+        <nav id="nav"></nav>
+      </div>
+      <div class="account-card">
+        <span class="online-dot"></span><small>SECURE SESSION</small>
+        <b id="accountName">Creator</b><span id="accountRole">CREATOR</span>
+        <button id="changePasswordBtn" class="ghost-link">Change password</button>
+        <button id="logoutBtn" class="ghost-link danger-text">Lock private gate</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><p class="eyebrow" id="sectionEyebrow">PRIVATE NETWORK</p><h2 id="pageTitle">Command Center</h2></div>
+        <div class="top-actions"><button class="icon-btn" id="refreshBtn" title="Refresh">↻</button><div class="network-pill"><i></i> PRIVATE</div></div>
+      </header>
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card"><button id="modalClose" class="modal-x">×</button><div id="modalBody"></div></div></div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

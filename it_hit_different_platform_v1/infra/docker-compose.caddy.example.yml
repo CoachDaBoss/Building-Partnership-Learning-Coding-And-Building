@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  ihd:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    env_file:
+      - ../.env
+    restart: unless-stopped
+    environment:
+      IHD_HOST: 0.0.0.0
+      IHD_PORT: 8787
+      IHD_SECURE_COOKIE: "1"
+      IHD_TURN_USERNAME: "${IHD_TURN_USERNAME}"
+      IHD_TURN_PASSWORD: "${IHD_TURN_PASSWORD}"
+    volumes:
+      - ihd_data:/app/data
+    networks:
+      - ihd_net
+
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    depends_on:
+      - ihd
+    env_file:
+      - ../.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - ihd_net
+
+networks:
+  ihd_net:
+
+volumes:
+  ihd_data:
+  caddy_data:
+  caddy_config:
