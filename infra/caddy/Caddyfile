@@ -1,0 +1,23 @@
+# The site host is read from the IHD_DOMAIN environment variable at runtime.
+# Use `IHD_DOMAIN=example.com` in your .env and pass it to the Caddy container.
+# Caddy supports environment placeholders via {env.VAR}.
+# Use this with `docker compose -f infra/docker-compose.caddy.example.yml up -d`.
+
+{env.IHD_DOMAIN} {
+    reverse_proxy ihd:8787
+
+    encode zstd gzip
+
+    log {
+        output file /data/logs/access.log
+        format json
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "same-origin"
+        Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
+    }
+}

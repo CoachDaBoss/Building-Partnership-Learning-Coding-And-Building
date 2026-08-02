@@ -1,0 +1,15 @@
+[Unit]
+Description=IHD Docker Compose stack
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ihd/infra
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d --build
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
