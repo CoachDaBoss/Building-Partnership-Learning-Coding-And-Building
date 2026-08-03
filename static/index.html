@@ -21,17 +21,35 @@
         <p class="gate-copy">Record it. Build it. Protect it. Release it. Own the business around it.</p>
         <div class="gate-badges"><span>STUDIO</span><span>BEATS</span><span>LIVE</span><span>RIGHTS</span><span>RELEASES</span></div>
       </div>
-      <form id="loginForm" class="gate-card">
+      <div class="gate-card">
         <div class="lock-dot">◆</div>
-        <p class="eyebrow">AUTHORIZED ACCESS</p>
-        <h2>Enter the network.</h2>
-        <p class="muted">Accounts are created or verified by IT HIT DIFFERENT LLC administration.</p>
-        <label>Email<input id="loginEmail" type="email" autocomplete="username" required placeholder="creator@example.com"></label>
-        <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••••••"></label>
-        <button class="btn primary wide" type="submit">Unlock Private Gate</button>
-        <div id="loginError" class="form-error"></div>
-        <p class="tiny">Private system. Access attempts are recorded. Production deployment should use HTTPS and MFA/passkeys.</p>
-      </form>
+        <p class="eyebrow">CREATOR ACCESS</p>
+        <div class="auth-tabs" role="tablist" aria-label="Account access">
+          <button id="authTabLogin" class="auth-tab active" type="button">Sign In</button>
+          <button id="authTabRegister" class="auth-tab" type="button">Create Account</button>
+        </div>
+        <form id="loginForm">
+          <h2>Enter the network.</h2>
+          <p class="muted">Sign in with your IT HIT DIFFERENT creator account.</p>
+          <label>Email<input id="loginEmail" type="email" autocomplete="username" required placeholder="creator@example.com"></label>
+          <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••••••"></label>
+          <button class="btn primary wide" type="submit">Unlock Private Gate</button>
+          <div id="loginError" class="form-error"></div>
+        </form>
+        <form id="registerForm" class="hidden">
+          <h2>Create your account.</h2>
+          <p class="muted">New accounts begin as active Creator accounts. Verification and elevated roles remain under administration control.</p>
+          <label>Artist / Creator Name<input id="registerName" type="text" autocomplete="name" required maxlength="120" placeholder="Your artist or creator name"></label>
+          <label>Email<input id="registerEmail" type="email" autocomplete="email" required maxlength="254" placeholder="creator@example.com"></label>
+          <label>Password<input id="registerPassword" type="password" autocomplete="new-password" required minlength="12" placeholder="12+ characters"></label>
+          <label>Confirm Password<input id="registerConfirm" type="password" autocomplete="new-password" required minlength="12" placeholder="Repeat your password"></label>
+          <label class="check-line"><input id="registerTerms" type="checkbox" required><span>I understand account creation does not automatically grant verified status.</span></label>
+          <button class="btn primary wide" type="submit">Create Creator Account</button>
+          <div id="registerError" class="form-error"></div>
+          <div id="registerSuccess" class="form-success"></div>
+        </form>
+        <p class="tiny gate-security-note">Private creator system. Access attempts are recorded. Never share your password.</p>
+      </div>
     </div>
   </section>
 

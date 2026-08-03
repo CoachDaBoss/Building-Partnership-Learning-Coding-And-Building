@@ -31,7 +31,7 @@ async function api(path,{method='GET',body=null,headers={}}={}){
   if(state.csrf && method!=='GET') opts.headers['X-IHD-CSRF']=state.csrf;
   if(body!==null){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body)}
   const r=await fetch(path,opts); let data={}; try{data=await r.json()}catch{}
-  if(r.status===401 && path!=='/api/login'){lockGate();throw new Error('Session expired')}
+  if(r.status===401 && !['/api/login','/api/register'].includes(path)){lockGate();throw new Error('Session expired')}
   if(!r.ok) throw new Error(data.message||data.error||`Request failed (${r.status})`);
   return data;
 }
@@ -49,9 +49,31 @@ async function upload(kind,file,onProgress){
 async function boot(){
   try{const me=await api('/api/me');state.user=me.user;state.csrf=me.csrf;enterApp()}catch{$('#gate').classList.remove('hidden');$('#app').classList.add('hidden')}
 }
+function showAuth(mode='login'){
+  const login=mode==='login';
+  $('#loginForm').classList.toggle('hidden',!login);
+  $('#registerForm').classList.toggle('hidden',login);
+  $('#authTabLogin').classList.toggle('active',login);
+  $('#authTabRegister').classList.toggle('active',!login);
+  $('#loginError').textContent='';$('#registerError').textContent='';
+}
+$('#authTabLogin').onclick=()=>showAuth('login');
+$('#authTabRegister').onclick=()=>showAuth('register');
 $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();$('#loginError').textContent='';const btn=$('#loginForm button[type=submit]');btn.disabled=true;try{const d=await api('/api/login',{method:'POST',body:{email:$('#loginEmail').value,password:$('#loginPassword').value}});state.user=d.user;state.csrf=d.csrf;enterApp()}catch(err){$('#loginError').textContent=err.message}finally{btn.disabled=false}});
+$('#registerForm').addEventListener('submit',async e=>{
+  e.preventDefault();$('#registerError').textContent='';$('#registerSuccess').textContent='';
+  const btn=$('#registerForm button[type=submit]');btn.disabled=true;
+  try{
+    const email=$('#registerEmail').value.trim();
+    const d=await api('/api/register',{method:'POST',body:{display_name:$('#registerName').value,email,password:$('#registerPassword').value,confirm_password:$('#registerConfirm').value,terms_accepted:$('#registerTerms').checked}});
+    $('#loginEmail').value=email;$('#loginPassword').value='';
+    $('#registerPassword').value=$('#registerConfirm').value='';$('#registerTerms').checked=false;
+    showAuth('login');$('#loginError').textContent='Account created successfully. Sign in with the password you just created.';
+    toast(d.message||'Account created. Sign in now.','good');
+  }catch(err){$('#registerError').textContent=err.message}finally{btn.disabled=false}
+});
 async function logout(){try{await api('/api/logout',{method:'POST',body:{}})}catch{}lockGate()}
-function lockGate(){cleanupRoom();if(state.micStream)state.micStream.getTracks().forEach(t=>t.stop());state.user=null;state.csrf=null;$('#app').classList.add('hidden');$('#gate').classList.remove('hidden');$('#loginPassword').value=''}
+function lockGate(){cleanupRoom();if(state.micStream)state.micStream.getTracks().forEach(t=>t.stop());state.user=null;state.csrf=null;$('#app').classList.add('hidden');$('#gate').classList.remove('hidden');$('#loginPassword').value='';showAuth('login')}
 $('#logoutBtn').onclick=logout;
 $('#refreshBtn').onclick=()=>go(state.page);
 $('#changePasswordBtn').onclick=()=>go('account');

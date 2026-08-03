@@ -8,6 +8,13 @@ import os
 import secrets
 import sqlite3
 import sys
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -21,6 +28,8 @@ STATIC = ROOT / "static"
 DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
 DB_PATH = DATA / "ihd.sqlite3"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_POSTGRES = DATABASE_URL.startswith(("postgresql://", "postgres://"))
 HOST = os.getenv("IHD_HOST", "127.0.0.1")
 PORT = int(os.getenv("IHD_PORT", "8787"))
 MAX_UPLOAD = int(os.getenv("IHD_MAX_UPLOAD_MB", "250")) * 1024 * 1024
@@ -175,21 +184,216 @@ CREATE INDEX IF NOT EXISTS idx_messages_room ON room_messages(room_id,id);
 CREATE INDEX IF NOT EXISTS idx_signals_to ON signals(room_id,to_user_id,id);
 '''
 
+POSTGRES_SCHEMA = r'''
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'creator',
+  verified INTEGER NOT NULL DEFAULT 0,
+  suspended INTEGER NOT NULL DEFAULT 0,
+  password_hash TEXT NOT NULL,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf TEXT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_events (
+  id BIGSERIAL PRIMARY KEY,
+  actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  target TEXT,
+  details TEXT,
+  ip TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assets (
+  id TEXT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  original_name TEXT NOT NULL,
+  storage_name TEXT NOT NULL,
+  mime TEXT,
+  size_bytes BIGINT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_assets (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  label TEXT,
+  PRIMARY KEY(project_id, asset_id)
+);
+CREATE TABLE IF NOT EXISTS beats (
+  id TEXT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  bpm INTEGER,
+  musical_key TEXT,
+  license_text TEXT NOT NULL,
+  asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+  public INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_presets (
+  id TEXT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  chain_json TEXT NOT NULL,
+  public INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS releases (
+  id TEXT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  primary_artist TEXT NOT NULL,
+  audio_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+  artwork_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+  composition_splits TEXT NOT NULL DEFAULT '[]',
+  master_splits TEXT NOT NULL DEFAULT '[]',
+  credits TEXT NOT NULL DEFAULT '[]',
+  rights_attested INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  share_slug TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS epk_profiles (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  artist_name TEXT,
+  bio TEXT,
+  market TEXT,
+  business_email TEXT,
+  links_json TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rooms (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  host_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  locked INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_members (
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL DEFAULT 'guest',
+  joined_at TEXT NOT NULL,
+  last_seen BIGINT NOT NULL,
+  PRIMARY KEY(room_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS room_invites (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  inviter_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  invitee_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_messages (
+  id BIGSERIAL PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS signals (
+  id BIGSERIAL PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  from_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  signal_type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_room ON room_messages(room_id,id);
+CREATE INDEX IF NOT EXISTS idx_signals_to ON signals(room_id,to_user_id,id);
+'''
+
+
+class DBConnection:
+    """DB-API compatibility wrapper: SQLite locally, PostgreSQL when DATABASE_URL is set."""
+    def __init__(self):
+        self.postgres = USE_POSTGRES
+        if self.postgres:
+            if psycopg is None:
+                raise RuntimeError('DATABASE_URL is set, but psycopg is not installed. Run: pip install -r requirements.txt')
+            self.raw = psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None)
+        else:
+            self.raw = sqlite3.connect(DB_PATH, timeout=20)
+            self.raw.row_factory = sqlite3.Row
+            self.raw.execute('PRAGMA foreign_keys=ON')
+
+    def _sql(self, sql):
+        return sql.replace('?', '%s') if self.postgres else sql
+
+    def execute(self, sql, params=()):
+        return self.raw.execute(self._sql(sql), params)
+
+    def executescript(self, script):
+        if not self.postgres:
+            return self.raw.executescript(script)
+        for statement in script.split(';'):
+            statement = statement.strip()
+            if statement:
+                self.raw.execute(statement)
+
+    def commit(self):
+        self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
+
+    def close(self):
+        self.raw.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.raw.commit()
+            else:
+                self.raw.rollback()
+        finally:
+            self.raw.close()
+        return False
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def db():
-    con = sqlite3.connect(DB_PATH, timeout=20)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    return DBConnection()
+
+
+def is_integrity_error(exc):
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    return psycopg is not None and isinstance(exc, psycopg.IntegrityError)
 
 
 def init_db():
     with db() as con:
-        con.executescript(SCHEMA)
+        con.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SCHEMA)
         row = con.execute("SELECT id FROM users WHERE role='super_admin' LIMIT 1").fetchone()
         if not row:
             email = os.getenv("IHD_MASTER_EMAIL", "owner@ithitdifferent.local").strip().lower()
@@ -335,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             p = self.path_only
-            if p == "/api/health": return self.send_json({"ok":True,"service":"IT HIT DIFFERENT LLC","time":now_iso()})
+            if p == "/api/health": return self.send_json({"ok":True,"service":"IT HIT DIFFERENT LLC","time":now_iso(),"database":"postgresql" if USE_POSTGRES else "sqlite","registration":True})
             if p == "/api/me": return self.api_me()
             if p == "/api/dashboard": return self.api_dashboard()
             if p == "/api/webrtc-config": return self.api_webrtc_config()
@@ -366,6 +570,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p=self.path_only
             if p == "/api/login": return self.api_login()
+            if p == "/api/register": return self.api_register()
             if p == "/api/logout": return self.api_logout()
             if p == "/api/account/password": return self.api_change_password()
             if p.startswith("/api/upload/"): return self.api_upload(p.split("/")[3])
@@ -395,11 +600,43 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self.log_error("PUT error: %r", e); return self.error_json(500,"server_error","The server could not complete that request.")
 
+    def api_register(self):
+        body = self.json_body()
+        email = str(body.get("email", "")).strip().lower()[:254]
+        name = str(body.get("display_name", "")).strip()[:120]
+        password = str(body.get("password", ""))
+        confirm = str(body.get("confirm_password", ""))
+        terms_accepted = bool(body.get("terms_accepted"))
+        if len(name) < 2:
+            return self.error_json(400, "display_name_required", "Enter your artist or creator name.")
+        if not email or "@" not in email or email.startswith("@") or email.endswith("@"):
+            return self.error_json(400, "email_invalid", "Enter a valid email address.")
+        if len(password) < 12:
+            return self.error_json(400, "weak_password", "Use a password with at least 12 characters.")
+        if password != confirm:
+            return self.error_json(400, "password_mismatch", "Passwords do not match.")
+        if not terms_accepted:
+            return self.error_json(400, "terms_required", "You must agree to the platform terms to create an account.")
+        try:
+            with db() as con:
+                cur = con.execute(
+                    "INSERT INTO users(email,display_name,role,verified,suspended,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+                    (email, name, "creator", 0, 0, hash_password(password), 0, now_iso()),
+                )
+                uid = cur.fetchone()["id"]
+                audit(con, uid, "self_registered", str(uid), {"email": email, "role": "creator", "terms_accepted": True}, self.client_ip())
+                con.commit()
+        except Exception as exc:
+            if not is_integrity_error(exc):
+                raise
+            return self.error_json(409, "email_exists", "An account with that email already exists. Try signing in instead.")
+        return self.send_json({"ok": True, "user_id": uid, "message": "Account created. You can sign in now."}, 201)
+
     def api_login(self):
         body=self.json_body(); email=str(body.get("email","")).strip().lower(); password=str(body.get("password", ""))
         if not email or not password: return self.error_json(400,"missing_credentials","Email and password are required.")
         with db() as con:
-            u=con.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE",(email,)).fetchone()
+            u=con.execute("SELECT * FROM users WHERE lower(email)=lower(?)",(email,)).fetchone()
             if not u or not verify_password(password,u["password_hash"]):
                 audit(con, u["id"] if u else None, "login_failed", email, ip=self.client_ip()); con.commit()
                 time.sleep(.25); return self.error_json(401,"invalid_credentials","Invalid email or password.")
@@ -535,7 +772,7 @@ class Handler(BaseHTTPRequestHandler):
             else: con.execute("INSERT INTO projects(id,owner_user_id,name,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?)",(pid,user["id"],name,json.dumps(metadata),ts,ts))
             for aid in assets:
                 own=con.execute("SELECT 1 FROM assets WHERE id=? AND owner_user_id=?",(aid,user["id"])).fetchone()
-                if own: con.execute("INSERT OR IGNORE INTO project_assets(project_id,asset_id,label) VALUES(?,?,?)",(pid,aid,"take"))
+                if own: con.execute("INSERT INTO project_assets(project_id,asset_id,label) VALUES(?,?,?) ON CONFLICT(project_id,asset_id) DO NOTHING",(pid,aid,"take"))
             audit(con,user["id"],"project_saved",pid,{"name":name},self.client_ip()); con.commit()
         return self.send_json({"ok":True,"project":{"id":pid,"name":name}},201 if not existing else 200)
 
@@ -682,11 +919,10 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             for _ in range(8):
                 code=generate_room_code()
-                try:
-                    con.execute("INSERT INTO rooms(id,code,host_user_id,name,created_at) VALUES(?,?,?,?,?)",(rid,code,user["id"],name,ts))
+                cur=con.execute("INSERT INTO rooms(id,code,host_user_id,name,created_at) VALUES(?,?,?,?,?) ON CONFLICT(code) DO NOTHING RETURNING code",(rid,code,user["id"],name,ts))
+                if cur.fetchone():
                     break
-                except sqlite3.IntegrityError:
-                    code=None
+                code=None
             if not code:
                 return self.error_json(500,"room_creation_failed","Could not generate a unique room code. Try again.")
             con.execute("INSERT INTO room_members(room_id,user_id,permission,joined_at,last_seen) VALUES(?,?,?,?,?)",(rid,user["id"],"host",ts,int(time.time())));
@@ -700,7 +936,7 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             r=con.execute("SELECT * FROM rooms WHERE code=?",(code,)).fetchone()
             if not r:return self.error_json(404,"room_missing","Room code not found.")
-            con.execute("INSERT OR IGNORE INTO room_members(room_id,user_id,permission,joined_at,last_seen) VALUES(?,?,?,?,?)",(r["id"],user["id"],"guest",now_iso(),int(time.time()))); audit(con,user["id"],"room_joined",r["id"],ip=self.client_ip()); con.commit()
+            con.execute("INSERT INTO room_members(room_id,user_id,permission,joined_at,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(room_id,user_id) DO NOTHING",(r["id"],user["id"],"guest",now_iso(),int(time.time()))); audit(con,user["id"],"room_joined",r["id"],ip=self.client_ip()); con.commit()
         return self.send_json({"ok":True,"room":dict(r)})
 
     def api_room_members(self, rid):
@@ -727,7 +963,7 @@ class Handler(BaseHTTPRequestHandler):
         if not body:return self.error_json(400,"empty_message","Message cannot be empty.")
         with db() as con:
             if not self.ensure_room_member(con,rid,user["id"]):return self.error_json(403,"room_forbidden","Join this room first.")
-            cur=con.execute("INSERT INTO room_messages(room_id,user_id,body,created_at) VALUES(?,?,?,?)",(rid,user["id"],body,now_iso())); con.commit(); mid=cur.lastrowid
+            cur=con.execute("INSERT INTO room_messages(room_id,user_id,body,created_at) VALUES(?,?,?,?) RETURNING id",(rid,user["id"],body,now_iso())); mid=cur.fetchone()["id"]; con.commit()
         return self.send_json({"ok":True,"id":mid},201)
 
     def api_signal_post(self,rid):
@@ -777,7 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             inv=con.execute("SELECT * FROM room_invites WHERE id=? AND invitee_user_id=? AND status='pending'",(iid,user["id"])).fetchone()
             if not inv:return self.error_json(404,"invite_missing","Invitation is no longer pending.")
             con.execute("UPDATE room_invites SET status=? WHERE id=?",(status,iid))
-            if status=="accepted":con.execute("INSERT OR IGNORE INTO room_members(room_id,user_id,permission,joined_at,last_seen) VALUES(?,?,?,?,?)",(inv["room_id"],user["id"],"guest",now_iso(),int(time.time())))
+            if status=="accepted":con.execute("INSERT INTO room_members(room_id,user_id,permission,joined_at,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(room_id,user_id) DO NOTHING",(inv["room_id"],user["id"],"guest",now_iso(),int(time.time())))
             audit(con,user["id"],"room_invite_responded",iid,{"status":status},self.client_ip()); con.commit()
         return self.send_json({"ok":True})
 
@@ -797,8 +1033,11 @@ class Handler(BaseHTTPRequestHandler):
         temp=secrets.token_urlsafe(12)
         try:
             with db() as con:
-                cur=con.execute("INSERT INTO users(email,display_name,role,verified,suspended,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,?,?)",(email,name,role,1 if role.startswith("verified_") or role=="admin" else 0,0,hash_password(temp),1,now_iso())); uid=cur.lastrowid; audit(con,user["id"],"user_created",str(uid),{"email":email,"role":role},self.client_ip()); con.commit()
-        except sqlite3.IntegrityError:return self.error_json(409,"email_exists","An account with that email already exists.")
+                cur=con.execute("INSERT INTO users(email,display_name,role,verified,suspended,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id",(email,name,role,1 if role.startswith("verified_") or role=="admin" else 0,0,hash_password(temp),1,now_iso())); uid=cur.fetchone()["id"]; audit(con,user["id"],"user_created",str(uid),{"email":email,"role":role},self.client_ip()); con.commit()
+        except Exception as exc:
+            if not is_integrity_error(exc):
+                raise
+            return self.error_json(409,"email_exists","An account with that email already exists.")
         return self.send_json({"ok":True,"user_id":uid,"temporary_password":temp,"message":"Temporary password is returned once. Send it to the user securely."},201)
 
     def api_admin_user_status(self,uid):
@@ -848,6 +1087,7 @@ def main():
     init_db()
     srv=ThreadingHTTPServer((HOST,PORT),Handler)
     print(f"IT HIT DIFFERENT LLC Creator Network running at http://{HOST}:{PORT}")
+    print(f"Database backend: {'PostgreSQL (DATABASE_URL)' if USE_POSTGRES else 'SQLite (local)'}")
     print("For LAN testing, set IHD_HOST=0.0.0.0. Put HTTPS/reverse proxy in front for production.")
     try:srv.serve_forever()
     except KeyboardInterrupt:print("\nShutting down.")
